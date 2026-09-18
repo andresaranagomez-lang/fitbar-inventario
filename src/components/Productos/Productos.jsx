@@ -270,10 +270,11 @@ function Productos({
     // ========================================
 
     const nuevoProducto = {
-      // El id y el código reales los asigna Supabase/App.jsx.
+      // El código se genera aquí antes de enviar el registro a Supabase.
+      // Esto evita insertar codigo='' y provocar productos_codigo_key.
       id: Date.now(),
 
-      codigo: '',
+      codigo: generarCodigo(formulario.tipo),
 
       nombre,
 
