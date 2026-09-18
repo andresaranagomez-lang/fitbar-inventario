@@ -98,41 +98,10 @@ function Productos({
   ])
 
   // ==========================================
-  // GENERAR CÓDIGO AUTOMÁTICO
+  // CÓDIGO DEL PRODUCTO
   // ==========================================
-
-  const generarCodigo = (tipo) => {
-    const prefijo =
-      tipo === 'Materia prima'
-        ? 'MP'
-        : 'PF'
-
-    const numerosExistentes = productos
-      .filter(
-        (producto) =>
-          producto.tipo === tipo &&
-          producto.codigo?.startsWith(prefijo)
-      )
-      .map((producto) => {
-        const numero = Number(
-          producto.codigo
-            .replace(prefijo, '')
-        )
-
-        return Number.isFinite(numero)
-          ? numero
-          : 0
-      })
-
-    const siguiente =
-      numerosExistentes.length > 0
-        ? Math.max(...numerosExistentes) + 1
-        : 1
-
-    return `${prefijo}${String(
-      siguiente
-    ).padStart(3, '0')}`
-  }
+  // El código se genera exclusivamente en App.jsx, consultando
+  // la base de datos. Este componente solo captura los datos del formulario.
 
   // ==========================================
   // ABRIR NUEVO
@@ -301,11 +270,10 @@ function Productos({
     // ========================================
 
     const nuevoProducto = {
+      // El id y el código reales los asigna Supabase/App.jsx.
       id: Date.now(),
 
-      codigo: generarCodigo(
-        formulario.tipo
-      ),
+      codigo: '',
 
       nombre,
 

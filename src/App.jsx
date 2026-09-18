@@ -653,34 +653,88 @@ function App() {
     setModalProducto(false)
   }
 
+  // ==========================================================
+  // CREAR PRODUCTO · CÓDIGO GENERADO DESDE LA BASE DE DATOS
+  // ==========================================================
+  // El componente visual NO decide el código. Supabase es la fuente
+  // oficial y la restricción UNIQUE de productos.codigo se mantiene.
+  // Si dos usuarios intentan crear al mismo tiempo, una colisión 23505
+  // provoca un nuevo intento con el siguiente código disponible.
   const crearProducto = async (producto) => {
-    const registro = {
-      codigo: producto.codigo?.trim(),
-      nombre: producto.nombre?.trim(),
-      categoria: producto.categoria?.trim() || 'Sin categoría',
-      tipo: producto.tipo,
-      unidad: producto.unidad,
-      stock: 0,
-      stock_minimo: Number(producto.stockMinimo) || 0,
-      costo: 0,
-      precio_venta: Number(producto.precioVenta) || 0,
-      activo: true,
+    const nombre = producto.nombre?.trim()
+    const categoria = producto.categoria?.trim() || 'Sin categoría'
+    const tipo = producto.tipo
+    const unidad = producto.unidad
+
+    if (!nombre || !tipo || !unidad) {
+      alert('Completa nombre, tipo y unidad de medida.')
+      return false
     }
 
-    const { data, error } = await supabase
-      .from('productos')
-      .insert(registro)
-      .select('*')
-      .single()
+    const prefijo = tipo === 'Materia prima' ? 'MP' : 'PF'
 
-    if (error) {
+    for (let intento = 0; intento < 5; intento += 1) {
+      const { data: existentes, error: consultaError } = await supabase
+        .from('productos')
+        .select('codigo')
+        .ilike('codigo', `${prefijo}%`)
+
+      if (consultaError) {
+        console.error('Error consultando códigos:', consultaError)
+        alert(`No fue posible consultar los códigos existentes.\n\n${consultaError.message}`)
+        return false
+      }
+
+      const numeros = (existentes || [])
+        .map(({ codigo }) => {
+          const valor = String(codigo || '').trim().toUpperCase()
+          if (!valor.startsWith(prefijo)) return 0
+          const numero = Number(valor.slice(prefijo.length))
+          return Number.isInteger(numero) && numero > 0 ? numero : 0
+        })
+        .filter((numero) => numero > 0)
+
+      const siguiente = (numeros.length ? Math.max(...numeros) : 0) + 1
+      const codigo = `${prefijo}${String(siguiente).padStart(3, '0')}`
+
+      const registro = {
+        codigo,
+        nombre,
+        categoria,
+        tipo,
+        unidad,
+        stock: 0,
+        stock_minimo: tipo === 'Materia prima' ? Number(producto.stockMinimo) || 0 : 0,
+        costo: 0,
+        precio_venta: tipo === 'Producto Fitbar' ? Number(producto.precioVenta) || 0 : 0,
+        activo: true,
+      }
+
+      const { data, error } = await supabase
+        .from('productos')
+        .insert(registro)
+        .select('*')
+        .single()
+
+      if (!error) {
+        setProductos((actuales) => [...actuales, mapearProductoSupabase(data)])
+        return true
+      }
+
       console.error('Error creando producto:', error)
+
+      // 23505 = unique_violation. Otro usuario ganó ese código;
+      // volvemos a consultar y generamos el siguiente.
+      if (error.code === '23505') {
+        continue
+      }
+
       alert(`No fue posible crear el producto.\n\n${error.message}`)
       return false
     }
 
-    setProductos((actuales) => [...actuales, mapearProductoSupabase(data)])
-    return true
+    alert('No fue posible asignar un código único. Intenta nuevamente.')
+    return false
   }
 
   const editarProducto = async (productoActualizado) => {
