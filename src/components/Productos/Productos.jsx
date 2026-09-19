@@ -274,7 +274,7 @@ function Productos({
       // Esto evita insertar codigo='' y provocar productos_codigo_key.
       id: Date.now(),
 
-      codigo: generarCodigo(formulario.tipo),
+
 
       nombre,
 
