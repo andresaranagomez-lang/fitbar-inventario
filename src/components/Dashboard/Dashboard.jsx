@@ -79,7 +79,7 @@ function Dashboard({
   }, [movimientos, periodo])
 
   const datos = useMemo(() => {
-    const ventas = movimientosPeriodo.filter((m) => m.tipo === 'Salida')
+    const ventas = movimientosPeriodo.filter((m) => m.tipo === 'Salida' && !m.anulada)
     const compras = movimientosPeriodo.filter((m) => m.tipo === 'Entrada')
 
     const ingresos = ventas.reduce(

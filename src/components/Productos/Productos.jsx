@@ -270,11 +270,10 @@ function Productos({
     // ========================================
 
     const nuevoProducto = {
-      // El código se genera aquí antes de enviar el registro a Supabase.
-      // Esto evita insertar codigo='' y provocar productos_codigo_key.
+      // El id y el código reales los asigna Supabase/App.jsx.
       id: Date.now(),
 
-
+      codigo: '',
 
       nombre,
 
@@ -330,12 +329,19 @@ function Productos({
       activo: true,
     }
 
-    const creado = await onCrearProducto?.(
-      nuevoProducto
-    )
+    try {
+      const creado = await onCrearProducto?.(
+        nuevoProducto
+      )
 
-    if (creado !== false) {
-      cerrarModal()
+      if (creado === true) {
+        cerrarModal()
+      }
+    } catch (error) {
+      console.error('Error creando producto desde Productos:', error)
+      alert(
+        `No fue posible crear el producto.\n\n${error?.message || 'Error inesperado.'}`
+      )
     }
   }
 

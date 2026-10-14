@@ -27,7 +27,7 @@ function Reportes({
     () =>
       movimientos.filter(
         (movimiento) =>
-          movimiento.tipo === 'Entrada' || movimiento.tipo === 'Salida'
+          movimiento.tipo === 'Entrada' || (movimiento.tipo === 'Salida' && !movimiento.anulada)
       ),
     [movimientos]
   )

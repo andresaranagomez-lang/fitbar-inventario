@@ -9,6 +9,9 @@ import Inventario from './components/Inventario/Inventario'
 import Dashboard from './components/Dashboard/Dashboard'
 import Reportes from './components/Reportes/Reportes'
 import { supabase } from './lib/supabaseClient'
+import Gastos from './components/Gastos/Gastos'
+import Cartera from './components/Cartera/Cartera'
+import Ajustes from './components/Ajustes/Ajustes'
 
 const productosIniciales = []
 
@@ -20,11 +23,11 @@ const productosIniciales = []
 const ROL_CONFIG = {
   gerencia: {
     nombre: 'Gerencia',
-    permisos: ['dashboard','inventario','productos','recetas','entradas','salidas','kardex','reportes','finanzas'],
+    permisos: ['dashboard','inventario','productos','recetas','entradas','salidas','kardex','reportes','finanzas','gastos','cartera','ajustes'],
   },
   administrador: {
     nombre: 'Administrador',
-    permisos: ['dashboard','inventario','productos','recetas','entradas','salidas','kardex','reportes','finanzas'],
+    permisos: ['dashboard','inventario','productos','recetas','entradas','salidas','kardex','reportes','finanzas','gastos','cartera','ajustes'],
   },
   vendedor: {
     nombre: 'Vendedor',
@@ -47,6 +50,9 @@ const MENU_ITEMS = [
   { id: 'entradas', label: 'Entradas', icon: '↑', grupo: 'MOVIMIENTOS' },
   { id: 'salidas', label: 'Salidas', icon: '↓', grupo: 'MOVIMIENTOS' },
   { id: 'kardex', label: 'Kardex', icon: '☷', grupo: 'MOVIMIENTOS' },
+  { id: 'gastos', label: 'Gastos', icon: '💸', grupo: 'MOVIMIENTOS' },
+  { id: 'cartera', label: 'Cuentas por cobrar', icon: '👥', grupo: 'MOVIMIENTOS' },
+  { id: 'ajustes', label: 'Ajustes inventario', icon: '⚖', grupo: 'MOVIMIENTOS' },
   { id: 'finanzas', label: 'Finanzas', icon: '💰', grupo: 'MOVIMIENTOS' },
   { id: 'reportes', label: 'Reportes', icon: '▥', grupo: 'MOVIMIENTOS' },
 ]
@@ -332,111 +338,208 @@ function App() {
     activo: producto.activo !== false,
   })
 
+  // ==========================================================
+  // DATOS WEB: SUPABASE COMO FUENTE ÚNICA
+  // ==========================================================
+  // La interfaz ya no mantiene inventario, recetas ni movimientos
+  // como información local. Al iniciar sesión se recupera todo desde
+  // Supabase. Las operaciones de compra/venta se ejecutan mediante
+  // funciones transaccionales y luego se vuelve a leer el estado real.
+  const [recetas, setRecetas] = useState([])
+  const [movimientos, setMovimientos] = useState([])
+  const [finanzasBD, setFinanzasBD] = useState([])
+
+  const cargarDatosOperativos = async () => {
+    const [
+      { data: productosData, error: productosError },
+      { data: recetasData, error: recetasError },
+      { data: entradasData, error: entradasError },
+      { data: salidasData, error: salidasError },
+      { data: consumosData, error: consumosError },
+      { data: finanzasData, error: finanzasError },
+    ] = await Promise.all([
+      supabase
+        .from('productos')
+        .select('*')
+        .order('id', { ascending: true }),
+
+      supabase
+        .from('recetas')
+        .select('id, producto_id')
+        .order('id', { ascending: true }),
+
+      supabase
+        .from('entradas')
+        .select('id, fecha, producto_id, cantidad, costo_total, costo_unitario, proveedor, observacion, forma_pago, usuario_id')
+        .order('id', { ascending: true }),
+
+      supabase
+        .from('salidas')
+        .select('id, fecha, producto_id, cantidad, precio_venta, valor_total, forma_pago, observacion, usuario_id, anulada, cliente_id')
+        .order('id', { ascending: true }),
+
+      supabase
+        .from('salida_consumos')
+        .select('id, salida_id, producto_id, cantidad_consumida, costo_unitario_historico, costo_total_historico')
+        .order('id', { ascending: true }),
+      supabase.from('movimientos_financieros').select('*').order('id', {ascending:true}),
+    ])
+
+    if (productosError) throw new Error(`Productos: ${productosError.message}`)
+    if (recetasError) throw new Error(`Recetas: ${recetasError.message}`)
+    if (entradasError) throw new Error(`Entradas: ${entradasError.message}`)
+    if (salidasError) throw new Error(`Salidas: ${salidasError.message}`)
+    if (consumosError) throw new Error(`Consumos: ${consumosError.message}`)
+    if (finanzasError) throw new Error(`Finanzas: ${finanzasError.message}`)
+
+    const productosMapeados = (productosData || []).map(mapearProductoSupabase)
+    const productosPorId = new Map(
+      productosMapeados.map((producto) => [Number(producto.id), producto])
+    )
+
+    const idsRecetas = (recetasData || []).map((receta) => receta.id)
+    let ingredientesData = []
+
+    if (idsRecetas.length > 0) {
+      const { data, error } = await supabase
+        .from('receta_ingredientes')
+        .select('id, receta_id, producto_id, cantidad')
+        .in('receta_id', idsRecetas)
+        .order('id', { ascending: true })
+
+      if (error) throw new Error(`Ingredientes de recetas: ${error.message}`)
+      ingredientesData = data || []
+    }
+
+    const recetasMapeadas = (recetasData || []).map((receta) => ({
+      id: receta.id,
+      productoId: Number(receta.producto_id),
+      ingredientes: ingredientesData
+        .filter((ingrediente) => ingrediente.receta_id === receta.id)
+        .map((ingrediente) => ({
+          id: ingrediente.id,
+          productoId: Number(ingrediente.producto_id),
+          cantidad: Number(ingrediente.cantidad),
+        })),
+    }))
+
+    const movimientosEntrada = (entradasData || []).map((entrada) => {
+      const producto = productosPorId.get(Number(entrada.producto_id))
+
+      return {
+        id: entrada.id,
+        tipo: 'Entrada',
+        fecha: entrada.fecha,
+        productoId: Number(entrada.producto_id),
+        producto: producto?.nombre || 'Materia prima',
+        codigo: producto?.codigo || '',
+        unidad: producto?.unidad || '',
+        cantidad: Number(entrada.cantidad) || 0,
+        costoTotal: Number(entrada.costo_total) || 0,
+        costoUnitario: Number(entrada.costo_unitario) || 0,
+        valorTotal: Number(entrada.costo_total) || 0,
+        proveedor: entrada.proveedor || '',
+        formaPago: entrada.forma_pago || 'Efectivo',
+        naturalezaFinanciera: 'Egreso',
+        valorFinanciero: Number(entrada.costo_total) || 0,
+        observacion: entrada.observacion || '',
+        usuarioId: entrada.usuario_id || null,
+      }
+    })
+
+    const consumosPorSalida = new Map()
+
+    ;(consumosData || []).forEach((consumo) => {
+      const salidaId = Number(consumo.salida_id)
+
+      if (!consumosPorSalida.has(salidaId)) {
+        consumosPorSalida.set(salidaId, [])
+      }
+
+      const producto = productosPorId.get(Number(consumo.producto_id))
+
+      consumosPorSalida.get(salidaId).push({
+        productoId: Number(consumo.producto_id),
+        producto: producto?.nombre || 'Ingrediente',
+        codigo: producto?.codigo || '',
+        unidad: producto?.unidad || '',
+        cantidadConsumida: Number(consumo.cantidad_consumida) || 0,
+        cantidadPorUnidad: 0,
+        stockAnterior: 0,
+        costoUnitarioHistorico: Number(consumo.costo_unitario_historico) || 0,
+        costoTotalHistorico: Number(consumo.costo_total_historico) || 0,
+        id: consumo.id,
+      })
+    })
+
+    const movimientosSalida = (salidasData || []).map((salida) => {
+      const producto = productosPorId.get(Number(salida.producto_id))
+      const consumos = consumosPorSalida.get(Number(salida.id)) || []
+
+      const costoTotalHistorico = consumos.reduce(
+        (total, consumo) => total + Number(consumo.costoTotalHistorico || 0),
+        0
+      )
+
+      const cantidad = Number(salida.cantidad) || 0
+
+      return {
+        id: salida.id,
+        tipo: 'Salida',
+        fecha: salida.fecha,
+        productoId: Number(salida.producto_id),
+        producto: producto?.nombre || 'Producto Fitbar',
+        codigo: producto?.codigo || '',
+        unidad: producto?.unidad || 'und',
+        cantidad,
+        precioVenta: Number(salida.precio_venta) || 0,
+        valorTotal: Number(salida.valor_total) || 0,
+        formaPago: salida.forma_pago || 'Efectivo',
+        anulada: salida.anulada === true,
+        clienteId: salida.cliente_id,
+        naturaleza: 'Ingreso por venta',
+        naturalezaFinanciera: 'Ingreso',
+        valorFinanciero: Number(salida.valor_total) || 0,
+        observacion: salida.observacion || '',
+        usuarioId: salida.usuario_id || null,
+        costoTotalHistorico,
+        costoUnitarioHistorico: cantidad > 0 ? costoTotalHistorico / cantidad : 0,
+        consumos,
+      }
+    })
+
+    setProductos(productosMapeados)
+    setRecetas(recetasMapeadas)
+    setMovimientos([...movimientosEntrada, ...movimientosSalida])
+    setFinanzasBD((finanzasData || []).map(f=>({...f, naturaleza:f.naturaleza, formaPago:f.forma_pago, valor:Number(f.valor)||0, producto:f.concepto, tipo:'Financiero'})))
+  }
+
   useEffect(() => {
     if (!usuarioActual?.id) {
       setProductos([])
-      return
-    }
-
-    let cancelado = false
-
-    const cargarProductosDesdeSupabase = async () => {
-      const { data, error } = await supabase
-        .from('productos')
-        .select('*')
-        .order('id', { ascending: true })
-
-      if (error) {
-        console.error('Error cargando productos desde Supabase:', error)
-        if (!cancelado) {
-          alert(`No fue posible cargar los productos desde Supabase.\n\n${error.message}`)
-        }
-        return
-      }
-
-      if (!cancelado) {
-        setProductos((data || []).map(mapearProductoSupabase))
-      }
-    }
-
-    cargarProductosDesdeSupabase()
-
-    return () => {
-      cancelado = true
-    }
-  }, [usuarioActual?.id])
-
-  // ==========================================================
-  // RECETAS: DATOS WEB EN SUPABASE
-  // ==========================================================
-  // Las recetas se cargan desde Supabase y no desde localStorage.
-  // Cada receta tiene un registro en `recetas` y sus ingredientes
-  // relacionados en `receta_ingredientes`.
-  const [recetas, setRecetas] = useState([])
-  const [movimientos, setMovimientos] = useState([])
-
-  useEffect(() => {
-    if (!usuarioActual?.id) {
       setRecetas([])
+      setMovimientos([])
+      setFinanzasBD([])
       return
     }
 
     let cancelado = false
 
-    const cargarRecetasDesdeSupabase = async () => {
-      const { data: recetasData, error: recetasError } = await supabase
-        .from('recetas')
-        .select('id, producto_id')
-        .order('id', { ascending: true })
+    const cargar = async () => {
+      try {
+        await cargarDatosOperativos()
 
-      if (recetasError) {
-        console.error('Error cargando recetas desde Supabase:', recetasError)
+        if (cancelado) return
+      } catch (error) {
+        console.error('Error cargando datos operativos desde Supabase:', error)
+
         if (!cancelado) {
-          alert(`No fue posible cargar las recetas desde Supabase.\n\n${recetasError.message}`)
+          alert(`No fue posible cargar los datos de Fitbar desde Supabase.\n\n${error.message}`)
         }
-        return
-      }
-
-      const idsRecetas = (recetasData || []).map((receta) => receta.id)
-
-      let ingredientesData = []
-
-      if (idsRecetas.length > 0) {
-        const { data, error: ingredientesError } = await supabase
-          .from('receta_ingredientes')
-          .select('id, receta_id, producto_id, cantidad')
-          .in('receta_id', idsRecetas)
-          .order('id', { ascending: true })
-
-        if (ingredientesError) {
-          console.error('Error cargando ingredientes de recetas:', ingredientesError)
-          if (!cancelado) {
-            alert(`No fue posible cargar los ingredientes de las recetas.\n\n${ingredientesError.message}`)
-          }
-          return
-        }
-
-        ingredientesData = data || []
-      }
-
-      const recetasMapeadas = (recetasData || []).map((receta) => ({
-        id: receta.id,
-        productoId: Number(receta.producto_id),
-        ingredientes: ingredientesData
-          .filter((ingrediente) => ingrediente.receta_id === receta.id)
-          .map((ingrediente) => ({
-            id: ingrediente.id,
-            productoId: Number(ingrediente.producto_id),
-            cantidad: Number(ingrediente.cantidad),
-          })),
-      }))
-
-      if (!cancelado) {
-        setRecetas(recetasMapeadas)
       }
     }
 
-    cargarRecetasDesdeSupabase()
+    cargar()
 
     return () => {
       cancelado = true
@@ -565,65 +668,87 @@ function App() {
   }
 
   // ==========================================================
-  // CREAR PRODUCTO · CÓDIGO SEGURO DESDE SUPABASE
+  // CREAR PRODUCTO · CÓDIGO GENERADO DESDE LA BASE DE DATOS
   // ==========================================================
-  // El código NO se confía al componente visual.
-  // Se consulta nuevamente la base de datos antes de insertar
-  // y, si existe una colisión por concurrencia, se reintenta.
-  // ==========================================================
-  // CREAR PRODUCTO · OPERACIÓN ATÓMICA EN SUPABASE
-  // ==========================================================
-  // El código NO se calcula en React. Supabase genera el código
-  // y realiza el INSERT dentro de la misma transacción.
-  // Esto elimina definitivamente las colisiones productos_codigo_key.
+  // El componente visual NO decide el código. Supabase es la fuente
+  // oficial y la restricción UNIQUE de productos.codigo se mantiene.
+  // Si dos usuarios intentan crear al mismo tiempo, una colisión 23505
+  // provoca un nuevo intento con el siguiente código disponible.
   const crearProducto = async (producto) => {
     const nombre = producto.nombre?.trim()
     const categoria = producto.categoria?.trim() || 'Sin categoría'
     const tipo = producto.tipo
     const unidad = producto.unidad
 
-    if (!nombre) {
-      alert('Ingresa el nombre del producto.')
+    if (!nombre || !tipo || !unidad) {
+      alert('Completa nombre, tipo y unidad de medida.')
       return false
     }
 
-    if (!tipo || !unidad) {
-      alert('Completa el tipo y la unidad de medida.')
-      return false
-    }
+    const prefijo = tipo === 'Materia prima' ? 'MP' : 'PF'
 
-    const { data, error } = await supabase.rpc('crear_producto', {
-      p_nombre: nombre,
-      p_categoria: categoria,
-      p_tipo: tipo,
-      p_unidad: unidad,
-      p_stock_minimo:
-        tipo === 'Materia prima'
-          ? Number(producto.stockMinimo) || 0
-          : 0,
-      p_precio_venta:
-        tipo === 'Producto Fitbar'
-          ? Number(producto.precioVenta) || 0
-          : 0,
-    })
+    for (let intento = 0; intento < 5; intento += 1) {
+      const { data: existentes, error: consultaError } = await supabase
+        .from('productos')
+        .select('codigo')
+        .ilike('codigo', `${prefijo}%`)
 
-    if (error) {
+      if (consultaError) {
+        console.error('Error consultando códigos:', consultaError)
+        alert(`No fue posible consultar los códigos existentes.\n\n${consultaError.message}`)
+        return false
+      }
+
+      const numeros = (existentes || [])
+        .map(({ codigo }) => {
+          const valor = String(codigo || '').trim().toUpperCase()
+          if (!valor.startsWith(prefijo)) return 0
+          const numero = Number(valor.slice(prefijo.length))
+          return Number.isInteger(numero) && numero > 0 ? numero : 0
+        })
+        .filter((numero) => numero > 0)
+
+      const siguiente = (numeros.length ? Math.max(...numeros) : 0) + 1
+      const codigo = `${prefijo}${String(siguiente).padStart(3, '0')}`
+
+      const registro = {
+        codigo,
+        nombre,
+        categoria,
+        tipo,
+        unidad,
+        stock: 0,
+        stock_minimo: tipo === 'Materia prima' ? Number(producto.stockMinimo) || 0 : 0,
+        costo: 0,
+        precio_venta: tipo === 'Producto Fitbar' ? Number(producto.precioVenta) || 0 : 0,
+        activo: true,
+      }
+
+      const { data, error } = await supabase
+        .from('productos')
+        .insert(registro)
+        .select('*')
+        .single()
+
+      if (!error) {
+        setProductos((actuales) => [...actuales, mapearProductoSupabase(data)])
+        return true
+      }
+
       console.error('Error creando producto:', error)
+
+      // 23505 = unique_violation. Otro usuario ganó ese código;
+      // volvemos a consultar y generamos el siguiente.
+      if (error.code === '23505') {
+        continue
+      }
+
       alert(`No fue posible crear el producto.\n\n${error.message}`)
       return false
     }
 
-    if (!data) {
-      alert('Supabase no devolvió el producto creado.')
-      return false
-    }
-
-    setProductos((actuales) => [
-      ...actuales,
-      mapearProductoSupabase(data),
-    ])
-
-    return true
+    alert('No fue posible asignar un código único. Intenta nuevamente.')
+    return false
   }
 
   const editarProducto = async (productoActualizado) => {
@@ -687,143 +812,123 @@ function App() {
     return true
   }
 
-  const registrarEntrada = (entrada) => {
-    setProductos((actuales) =>
-      actuales.map((producto) => {
-        if (producto.id !== Number(entrada.productoId)) {
-          return producto
-        }
+  // ==========================================================
+  // ENTRADAS / SALIDAS: OPERACIONES REALES EN SUPABASE
+  // ==========================================================
+  // Importante: aquí no modificamos stock manualmente. La base de datos
+  // es la que calcula el costo promedio, actualiza existencias, genera
+  // Kardex y registra Finanzas. Después de confirmar la transacción,
+  // refrescamos la información oficial para que la interfaz quede
+  // exactamente sincronizada con Supabase.
 
-        const stockAnterior = Number(producto.stock) || 0
-        const costoAnterior = Number(producto.costo) || 0
-        const cantidadEntrada = Number(entrada.cantidad) || 0
-        const costoEntrada = Number(entrada.costoUnitario) || 0
-        const stockNuevo = stockAnterior + cantidadEntrada
+  const registrarEntrada = async (entrada) => {
+    try {
+      const { data: usuarioData, error: usuarioError } =
+        await supabase.auth.getUser()
 
-        const costoPromedio =
-          stockNuevo > 0
-            ? ((stockAnterior * costoAnterior) +
-                (cantidadEntrada * costoEntrada)) /
-              stockNuevo
-            : costoEntrada
+      if (usuarioError || !usuarioData?.user) {
+        throw new Error('No se pudo identificar el usuario de la sesión.')
+      }
 
-        return {
-          ...producto,
-          stock: stockNuevo,
-          costo: costoPromedio,
-        }
+      const cantidad = Number(entrada.cantidad) || 0
+      const costoTotal = Number(
+        entrada.costoTotal ?? entrada.valorTotal ?? 0
+      ) || 0
+
+      if (cantidad <= 0) {
+        throw new Error('La cantidad de entrada debe ser mayor que cero.')
+      }
+
+      if (costoTotal < 0) {
+        throw new Error('El costo total no puede ser negativo.')
+      }
+
+      const { data, error } = await supabase.rpc('registrar_entrada', {
+        p_fecha: entrada.fecha,
+        p_producto_id: Number(entrada.productoId),
+        p_cantidad: cantidad,
+        p_costo_total: costoTotal,
+        p_proveedor: entrada.proveedor?.trim() || '',
+        p_observacion: entrada.observacion?.trim() || '',
+        p_forma_pago: entrada.formaPago || 'Efectivo',
+        p_usuario_id: usuarioData.user.id,
       })
-    )
 
-    setMovimientos((actuales) => [
-      ...actuales,
-      {
-        ...entrada,
-        id: entrada.id || Date.now(),
-        tipo: 'Entrada',
-        naturalezaFinanciera: 'Egreso',
-        formaPago: entrada.formaPago || 'Efectivo',
-        valorFinanciero: Number(entrada.costoTotal ?? entrada.valorTotal ?? 0) || 0,
-      },
-    ])
+      if (error) {
+        console.error('Error registrando entrada en Supabase:', error)
+        throw new Error(error.message || 'No fue posible registrar la entrada.')
+      }
+
+      await cargarDatosOperativos()
+
+      console.log('Entrada registrada correctamente:', data)
+      return true
+    } catch (error) {
+      console.error('Error registrando entrada:', error)
+      alert(`No fue posible registrar la entrada.\n\n${error.message || 'Error desconocido.'}`)
+      return false
+    }
   }
 
+  const registrarSalida = async (salida) => {
+    try {
+      const { data: usuarioData, error: usuarioError } =
+        await supabase.auth.getUser()
 
-  const registrarSalida = (salida) => {
-    const cantidadVendida = Number(salida.cantidad) || 0
-    const receta = recetas.find(
-      (item) => item.productoId === Number(salida.productoId)
-    )
+      if (usuarioError || !usuarioData?.user) {
+        throw new Error('No se pudo identificar el usuario de la sesión.')
+      }
 
-    if (!receta) {
-      alert('El producto seleccionado no tiene una receta guardada.')
-      return false
-    }
+      const cantidadVendida = Number(salida.cantidad) || 0
+      const precioVenta = Number(salida.precioVenta) || 0
 
-    const consumos = receta.ingredientes.map((ingrediente) => {
-      const producto = productos.find(
-        (item) => item.id === Number(ingrediente.productoId)
+      if (cantidadVendida <= 0) {
+        throw new Error('La cantidad vendida debe ser mayor que cero.')
+      }
+
+      if (precioVenta < 0) {
+        throw new Error('El precio de venta no puede ser negativo.')
+      }
+
+      const receta = recetas.find(
+        (item) => item.productoId === Number(salida.productoId)
       )
 
-      const cantidadPorUnidad = Number(ingrediente.cantidad) || 0
-      const cantidadConsumida = cantidadPorUnidad * cantidadVendida
-      const costoUnitarioHistorico = Number(producto?.costo) || 0
-      const costoTotalHistorico = cantidadConsumida * costoUnitarioHistorico
-
-      return {
-        productoId: Number(ingrediente.productoId),
-        producto: producto?.nombre || 'Ingrediente',
-        codigo: producto?.codigo || '',
-        unidad: producto?.unidad || '',
-        cantidadPorUnidad,
-        cantidadConsumida,
-        stockAnterior: Number(producto?.stock) || 0,
-        // Se congela el costo vigente en el instante de la venta.
-        costoUnitarioHistorico,
-        costoTotalHistorico,
-      }
-    })
-
-    const faltantes = consumos.filter(
-      (consumo) => consumo.cantidadConsumida > consumo.stockAnterior
-    )
-
-    if (faltantes.length > 0) {
-      const detalle = faltantes
-        .map(
-          (item) =>
-            `• ${item.producto}: necesita ${item.cantidadConsumida} ${item.unidad} y hay ${item.stockAnterior} ${item.unidad}`
+      if (!receta) {
+        throw new Error(
+          'El producto seleccionado no tiene una receta guardada.'
         )
-        .join('\n')
+      }
 
-      alert(`No hay inventario suficiente para registrar la salida:\n\n${detalle}`)
+      // La función transaccional de Supabase vuelve a validar stock y
+      // congela el costo histórico de cada consumo. La validación visual
+      // de faltantes sigue en Salidas.jsx para darle respuesta inmediata
+      // al usuario, pero la base de datos es la autoridad final.
+
+      const { data, error } = await supabase.rpc('fitbar_registrar_venta', {
+        p_fecha: salida.fecha,
+        p_producto_id: Number(salida.productoId),
+        p_cantidad: cantidadVendida,
+        p_precio_venta: precioVenta,
+        p_forma_pago: salida.formaPago || 'Efectivo',
+        p_observacion: salida.observacion?.trim() || '',
+        p_cliente_id: salida.clienteId || null,
+      })
+
+      if (error) {
+        console.error('Error registrando salida en Supabase:', error)
+        throw new Error(error.message || 'No fue posible registrar la venta.')
+      }
+
+      await cargarDatosOperativos()
+
+      console.log('Salida registrada correctamente:', data)
+      return true
+    } catch (error) {
+      console.error('Error registrando salida:', error)
+      alert(`No fue posible registrar la salida.\n\n${error.message || 'Error desconocido.'}`)
       return false
     }
-
-    setProductos((actuales) =>
-      actuales.map((producto) => {
-        const consumo = consumos.find(
-          (item) => item.productoId === producto.id
-        )
-
-        if (!consumo) return producto
-
-        return {
-          ...producto,
-          stock:
-            (Number(producto.stock) || 0) -
-            (Number(consumo.cantidadConsumida) || 0),
-        }
-      })
-    )
-
-    const costoTotalHistorico = consumos.reduce(
-      (total, consumo) =>
-        total + (Number(consumo.costoTotalHistorico) || 0),
-      0
-    )
-
-    const costoUnitarioHistorico =
-      cantidadVendida > 0 ? costoTotalHistorico / cantidadVendida : 0
-
-    setMovimientos((actuales) => [
-      ...actuales,
-      {
-        ...salida,
-        id: salida.id || Date.now(),
-        tipo: 'Salida',
-        naturalezaFinanciera: 'Ingreso',
-        formaPago: salida.formaPago || 'Efectivo',
-        valorFinanciero:
-          Number(salida.valorTotal ?? salida.total ?? 0) || 0,
-        // Costo histórico congelado al momento de registrar la venta.
-        costoUnitarioHistorico,
-        costoTotalHistorico,
-        consumos,
-      },
-    ])
-
-    return true
   }
 
   const seleccionarProductoReceta = (productoId) => {
@@ -1165,33 +1270,7 @@ function App() {
       maximumFractionDigits: 0,
     }).format(Number(valor) || 0)
 
-  const movimientosFinancieros = useMemo(
-    () =>
-      movimientos
-        .filter(
-          (movimiento) =>
-            movimiento.tipo === 'Entrada' || movimiento.tipo === 'Salida'
-        )
-        .map((movimiento) => {
-          const esEntrada = movimiento.tipo === 'Entrada'
-          const valor =
-            Number(
-              movimiento.valorFinanciero ??
-                (esEntrada
-                  ? movimiento.costoTotal ?? movimiento.valorTotal
-                  : movimiento.valorTotal ?? movimiento.total)
-            ) || 0
-
-          return {
-            ...movimiento,
-            fecha: movimiento.fecha || new Date().toISOString().split('T')[0],
-            naturaleza: esEntrada ? 'Egreso' : 'Ingreso',
-            valor,
-            formaPago: movimiento.formaPago || 'Efectivo',
-          }
-        }),
-    [movimientos]
-  )
+  const movimientosFinancieros = useMemo(() => finanzasBD, [finanzasBD])
 
   const resumenFinanciero = useMemo(() => {
     const ingresos = movimientosFinancieros
@@ -1310,15 +1389,15 @@ function App() {
 
         <div className="stats-grid">
           <div className="stat-card">
-            <span className="stat-label">Ingresos por ventas</span>
+            <span className="stat-label">Ingresos cobrados</span>
             <strong>{formatearMoneda(resumenFinanciero.ingresos)}</strong>
-            <small>Ventas registradas</small>
+            <small>Ventas y abonos efectivamente cobrados</small>
           </div>
 
           <div className="stat-card">
-            <span className="stat-label">Egresos por compras</span>
+            <span className="stat-label">Egresos pagados</span>
             <strong>{formatearMoneda(resumenFinanciero.egresos)}</strong>
-            <small>Entradas de materias primas</small>
+            <small>Compras y gastos operativos</small>
           </div>
 
           <div className="stat-card">
@@ -1841,6 +1920,8 @@ function App() {
             recetas={recetas}
             movimientos={movimientos}
             onRegistrarSalida={registrarSalida}
+            onChange={cargarDatosOperativos}
+            puedeAdministrar={['gerencia','administrador'].includes(usuarioActual.rol)}
           />
         )
 
@@ -1855,6 +1936,12 @@ function App() {
 
       case 'finanzas':
         return renderFinanzas()
+      case 'gastos':
+        return <Gastos onChange={cargarDatosOperativos} />
+      case 'cartera':
+        return <Cartera onChange={cargarDatosOperativos} />
+      case 'ajustes':
+        return <Ajustes productos={productos} onChange={cargarDatosOperativos} />
 
       case 'reportes':
         return (
